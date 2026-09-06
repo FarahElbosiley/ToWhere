@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from config import settings
 
 _BASE_URL = "https://api.opentripmap.com/0.1/en/places"
+_OVERPASS_URL = "https://overpass-api.de/api/interpreter"
 
 # OpenTripMap "kinds" taxonomy: https://opentripmap.io/catalog
 _CATEGORY_MAP = {
@@ -20,6 +21,14 @@ _CATEGORY_MAP = {
     "restaurants": "foods",
     "museums": "museums",
     "nature": "natural",
+}
+
+_OVERPASS_TAGS = {
+    "attractions": ('tourism="attraction"', 'tourism="viewpoint"',
+                     'tourism="theme_park"', 'tourism="zoo"'),
+    "restaurants": ('amenity="restaurant"',),
+    "museums": ('tourism="museum"',),
+    "nature": ('leisure="park"', 'tourism="nature_reserve"'),
 }
 
 
@@ -55,6 +64,43 @@ def _search_radius(
     return resp.json()
 
 
+def _search_overpass(
+    lat: float, lon: float, category: str, limit: int
+) -> list[str]:
+    """Find named places in OpenStreetMap near the geocoded city center."""
+    selectors = _OVERPASS_TAGS.get(category, _OVERPASS_TAGS["attractions"])
+    clauses = "\n".join(
+        f'  nwr[{selector}](around:8000,{lat},{lon});'
+        for selector in selectors
+    )
+    query = f"[out:json][timeout:20];\n(\n{clauses}\n);\nout center tags;"
+    resp = requests.get(
+        _OVERPASS_URL,
+        params={"data": query},
+        headers={"User-Agent": "tourism-agent/1.0"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    elements = resp.json().get("elements", [])
+    return [
+        element["tags"]["name"]
+        for element in elements
+        if element.get("tags", {}).get("name")
+    ][:limit]
+
+
+def _unique_names(*name_lists: list[str]) -> list[str]:
+    """Combine place names while preserving provider and result order."""
+    names: list[str] = []
+    seen: set[str] = set()
+    for name_list in name_lists:
+        for name in name_list:
+            if name not in seen:
+                names.append(name)
+                seen.add(name)
+    return names
+
+
 class PlaceSearchInput(BaseModel):
     city: str = Field(description="City to search in, e.g. 'Lisbon'")
     category: str = Field(
@@ -74,11 +120,23 @@ def search_places(city: str, category: str = "attractions", limit: int = 8) -> s
     kind = _CATEGORY_MAP.get(category, _CATEGORY_MAP["attractions"])
     try:
         lat, lon = _geocode(city)
-        raw_places = _search_radius(lat, lon, kind, limit)
     except requests.RequestException as exc:
         return f"Places lookup failed for '{city}': {exc}"
 
-    named = [p["name"] for p in raw_places if p.get("name")]
+    # Regional coverage varies, so use OpenStreetMap as a keyless fallback.
+    try:
+        raw_places = _search_radius(lat, lon, kind, limit)
+        named = [p["name"] for p in raw_places if p.get("name")]
+    except requests.RequestException:
+        named = []
+
+    if len(named) < 3:
+        try:
+            osm_names = _search_overpass(lat, lon, category, limit)
+        except requests.RequestException:
+            osm_names = []
+        named = _unique_names(named, osm_names)[:limit]
+
     if not named:
         return f"No {category} found for {city}."
 

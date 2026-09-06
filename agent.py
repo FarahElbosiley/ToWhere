@@ -27,7 +27,21 @@ tools to gather real information before answering:
 Call tools as needed, then write a clear day-by-day plan in plain text. \
 Be specific (use real place names you found via tools) rather than generic. \
 If a tool fails or returns nothing useful, say so plainly instead of \
-inventing details.
+inventing details. When you produce or revise a complete day-by-day \
+itinerary, begin the response with the exact marker `ITINERARY_READY`. For \
+clarifying questions and ordinary conversation, do not use that marker.
+
+Treat tool coverage as verified only for this turn. If search_places or \
+search_travel_guide returns no results, an error, or content that does not \
+match the requested city, never silently blend that gap with confident-\
+sounding invented details. Put any place name, fact, or recommendation not \
+returned by a tool this turn under a separate heading such as "Not \
+independently verified - please confirm". When coverage is weak, proactively \
+offer to try a different search term, focus on a specific interest, or \
+continue with an explicitly unverified draft. Describe weak or mismatched \
+search coverage generically, such as "search results were limited or did not \
+match this destination well". Do not name unrelated cities or countries that \
+appeared in irrelevant tool results.
 """
 
 _STRUCTURING_SYSTEM_PROMPT = """\
@@ -35,6 +49,8 @@ Convert the trip-planning notes below into the structured itinerary format. \
 Preserve all concrete place names and practical notes; do not invent new \
 ones.
 """
+
+_ITINERARY_MARKER = "ITINERARY_READY"
 
 
 def _build_llm() -> ChatOpenAI:
@@ -53,6 +69,7 @@ def _build_agent_executor() -> AgentExecutor:
     prompt = ChatPromptTemplate.from_messages(
         [
             ("system", _AGENT_SYSTEM_PROMPT),
+            MessagesPlaceholder("chat_history", optional=True),
             ("human", "{input}"),
             MessagesPlaceholder("agent_scratchpad"),
         ]
@@ -77,18 +94,30 @@ class TourismAgent:
             Itinerary, method="function_calling"
         )
 
+    @property
+    def executor(self) -> AgentExecutor:
+        """Expose the tool-calling runnable for the conversation service."""
+        return self._executor
+
+    def run(self, request: str) -> str:
+        """Run the tool-calling agent and return its free-text response."""
+        result = self._executor.invoke({"input": request})
+        return result["output"]
+
+    def structure_itinerary(self, request: str, raw_notes: str) -> Itinerary:
+        """Convert planning notes into the typed itinerary domain model."""
+        structuring_prompt = (
+            f"{_STRUCTURING_SYSTEM_PROMPT}\n\nTrip request: {request}\n\n"
+            f"Planning notes:\n{raw_notes}"
+        )
+        return self._structuring_llm.invoke(structuring_prompt)
+
     def plan_trip(self, request: str) -> tuple[Itinerary, str]:
         """Run the agent on a free-text trip request.
 
         Returns (structured_itinerary, raw_agent_reasoning) so the UI can
         show either the polished itinerary or the underlying notes.
         """
-        result = self._executor.invoke({"input": request})
-        raw_notes = result["output"]
-
-        structuring_prompt = (
-            f"{_STRUCTURING_SYSTEM_PROMPT}\n\nTrip request: {request}\n\n"
-            f"Planning notes:\n{raw_notes}"
-        )
-        itinerary = self._structuring_llm.invoke(structuring_prompt)
+        raw_notes = self.run(request)
+        itinerary = self.structure_itinerary(request, raw_notes)
         return itinerary, raw_notes

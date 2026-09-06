@@ -18,15 +18,16 @@ class Settings:
     opentripmap_api_key: str
     openweather_api_key: str
 
-    # Qwen3.6 Plus Preview, served free (rate-limited) via OpenRouter.
-    # Supports tool calling, which the agent relies on.
-    llm_model: str = "qwen/qwen3.6-plus-preview:free"
+    # MiniMax M3, served free (rate-limited) via OpenRouter.
+    # Supports tool calling and structured output, which the agent relies on.
+    llm_model: str = "minimax/minimax-m3:free"
     llm_base_url: str = "https://openrouter.ai/api/v1"
     llm_temperature: float = 0.3
 
     rag_persist_dir: str = "data/chroma_db"
     rag_collection_name: str = "city_guides"
     rag_top_k: int = 4
+    conversation_db_path: str = "conversations.sqlite"
 
     agent_max_iterations: int = 8
 
